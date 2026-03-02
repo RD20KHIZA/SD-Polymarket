@@ -102,6 +102,124 @@ def _day_tick_axis(max_k: int) -> dict:
     )
 
 
+# ── price chart with zone overlay ─────────────────────────────────────────────
+
+def plot_price_zones(
+    df_zones: pd.DataFrame,
+    study_df: Optional[pd.DataFrame] = None,
+    symbol: str = "BTC/USDT",
+    sigmas: Optional[list] = None,
+    show_touches: bool = True,
+) -> go.Figure:
+    """
+    Candlestick price chart with monthly volatility zone levels overlaid.
+
+    Args:
+        df_zones:     output of compute_zones() — 4H OHLCV + all zone columns
+        study_df:     output of compute_forward_returns() — used for touch markers
+        symbol:       chart title label
+        sigmas:       which sigma levels to draw (default: [0.5,1.0,1.5,2.0,3.0,4.0])
+        show_touches: whether to mark first-touch events with markers
+    """
+    if sigmas is None:
+        sigmas = [s for s in ZONE_SIGMAS if s in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]]
+
+    def _col(sigma: float, direction: str) -> str:
+        return f"{direction}_{str(sigma).replace('.', '_')}sd"
+
+    fig = go.Figure()
+
+    # ── candlestick ──────────────────────────────────────────────────────────
+    fig.add_trace(go.Candlestick(
+        x=df_zones.index,
+        open=df_zones["open"],
+        high=df_zones["high"],
+        low=df_zones["low"],
+        close=df_zones["close"],
+        name="Price",
+        increasing_line_color="#26a69a",
+        decreasing_line_color="#ef5350",
+        showlegend=False,
+        hovertext=[
+            f"O: {o:,.2f}  H: {h:,.2f}  L: {l:,.2f}  C: {c:,.2f}"
+            for o, h, l, c in zip(
+                df_zones["open"], df_zones["high"],
+                df_zones["low"],  df_zones["close"],
+            )
+        ],
+        hoverinfo="x+text",
+    ))
+
+    # ── monthly open reference ───────────────────────────────────────────────
+    if "monthly_open" in df_zones.columns:
+        fig.add_trace(go.Scatter(
+            x=df_zones.index,
+            y=df_zones["monthly_open"],
+            line=dict(color="#8892a4", width=0.8, dash="dot"),
+            name="Monthly Open",
+            hovertemplate="Monthly Open: %{y:,.2f}<extra></extra>",
+        ))
+
+    # ── zone lines ───────────────────────────────────────────────────────────
+    # Only show legend entry for the first direction of each sigma to avoid clutter
+    for sigma in sigmas:
+        for direction in ["supply", "demand"]:
+            col = _col(sigma, direction)
+            if col not in df_zones.columns:
+                continue
+            color = _color(sigma, direction)
+            fig.add_trace(go.Scatter(
+                x=df_zones.index,
+                y=df_zones[col],
+                name=f"{sigma}σ",
+                line=dict(color=color, width=0.9),
+                legendgroup=f"sigma_{sigma}",
+                showlegend=(direction == "supply"),
+                hovertemplate=f"{sigma}σ {direction}: %{{y:,.2f}}<extra></extra>",
+            ))
+
+    # ── touch markers ────────────────────────────────────────────────────────
+    if show_touches and study_df is not None and not study_df.empty:
+        for direction in ["supply", "demand"]:
+            sub = study_df[study_df["direction"] == direction]
+            if sub.empty:
+                continue
+            color  = _SUPPLY_COLORS[len(ZONE_SIGMAS) // 2] if direction == "supply" else _DEMAND_COLORS[len(ZONE_SIGMAS) // 2]
+            marker = "triangle-down" if direction == "supply" else "triangle-up"
+            fig.add_trace(go.Scatter(
+                x=sub["timestamp"],
+                y=sub["zone_level"],
+                mode="markers",
+                name=f"Touch ({direction})",
+                marker=dict(symbol=marker, size=9, color=color,
+                            opacity=0.9, line=dict(color="#131722", width=0.5)),
+                hovertemplate=(
+                    f"<b>{direction} touch</b><br>"
+                    "Time: %{x}<br>"
+                    "Zone: %{y:,.2f}<br>"
+                    "σ: %{customdata:.2f}<extra></extra>"
+                ),
+                customdata=sub["sigma"],
+            ))
+
+    # ── layout ───────────────────────────────────────────────────────────────
+    # Set initial view to last 18 months while keeping full history available
+    last_ts  = df_zones.index[-1]
+    first_ts = last_ts - pd.DateOffset(months=18)
+
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text=f"<b>Price & Volatility Zones</b>  |  {symbol}", font=dict(size=13)),
+        yaxis_title="Price",
+        height=620,
+        xaxis_rangeslider_visible=False,
+        xaxis_range=[first_ts, last_ts],
+    )
+    fig.update_xaxes(**_AXIS_STYLE)
+    fig.update_yaxes(**_AXIS_STYLE)
+    return fig
+
+
 # ── return curve ──────────────────────────────────────────────────────────────
 
 def plot_return_curve(

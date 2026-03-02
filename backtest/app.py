@@ -23,6 +23,7 @@ from visualization import (
     full_report,
     plot_distribution,
     plot_hit_rate,
+    plot_price_zones,
     plot_return_curve,
     plot_sharpe_vs_k,
     _hex_to_rgba,
@@ -85,12 +86,12 @@ with st.sidebar:
 
 @st.cache_data(show_spinner=False)
 def load_and_compute(symbol: str, since: str, lookback: int, max_k: int):
-    df_4h  = fetch_crypto_ohlcv(symbol, "4h", since)
-    daily  = resample_to_daily(df_4h)
+    df_4h    = fetch_crypto_ohlcv(symbol, "4h", since)
+    daily    = resample_to_daily(df_4h)
     df_zones = compute_zones(df_4h, daily, lookback=lookback)
     events   = detect_zone_touches(df_zones)
     study    = compute_forward_returns(df_zones, events, max_k=max_k)
-    return study
+    return study, df_zones
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
@@ -103,9 +104,9 @@ st.caption(
 if run:
     with st.spinner(f"Loading data for **{symbol}**..."):
         try:
-            study = load_and_compute(symbol, since, lookback, max_k)
+            study, df_zones = load_and_compute(symbol, since, lookback, max_k)
             st.session_state.update({
-                "study": study, "symbol": symbol,
+                "study": study, "df_zones": df_zones, "symbol": symbol,
                 "max_k": max_k, "sigmas": sigmas_selected, "since": since,
             })
         except Exception as e:
@@ -116,11 +117,12 @@ if "study" not in st.session_state:
     st.info("Configure settings in the sidebar and click **▶ Run Study**.")
     st.stop()
 
-study:   pd.DataFrame = st.session_state["study"]
-symbol:  str          = st.session_state["symbol"]
-_max_k:  int          = st.session_state["max_k"]
-_sigmas: list         = st.session_state.get("sigmas", ZONE_SIGMAS)
-_since:  str          = st.session_state.get("since", since)
+study:    pd.DataFrame = st.session_state["study"]
+df_zones: pd.DataFrame = st.session_state["df_zones"]
+symbol:   str          = st.session_state["symbol"]
+_max_k:   int          = st.session_state["max_k"]
+_sigmas:  list         = st.session_state.get("sigmas", ZONE_SIGMAS)
+_since:   str          = st.session_state.get("since", since)
 
 # ── summary metrics ───────────────────────────────────────────────────────────
 
@@ -143,13 +145,44 @@ st.divider()
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
 
-_tab_names = ["Return Curves", "Hit Rate", "Sharpe vs k", "Distribution", "Full Report", "Data"]
+_tab_names = ["Price Chart", "Return Curves", "Hit Rate", "Sharpe vs k", "Distribution", "Full Report", "Data"]
 if _VBT_OK:
     _tab_names.append("VectorBT Sweep")
 
 _tabs = st.tabs(_tab_names)
-tab_curves, tab_hit, tab_sharpe, tab_dist, tab_report, tab_data = _tabs[:6]
-tab_vbt = _tabs[6] if _VBT_OK else None
+tab_price, tab_curves, tab_hit, tab_sharpe, tab_dist, tab_report, tab_data = _tabs[:7]
+tab_vbt = _tabs[7] if _VBT_OK else None
+
+# ── Price Chart ───────────────────────────────────────────────────────────────
+
+with tab_price:
+    st.subheader("Price History with Zone Levels")
+    st.caption(
+        "Candlestick chart with monthly volatility zones overlaid. "
+        "Zones reset at every new month. Triangles mark first-touch events."
+    )
+
+    pc_c1, pc_c2 = st.columns([3, 1])
+    with pc_c2:
+        pc_sigmas = st.multiselect(
+            "Sigma levels to show",
+            options=ZONE_SIGMAS,
+            default=[s for s in ZONE_SIGMAS if s in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]],
+            key="pc_sigmas",
+        )
+        pc_touches = st.toggle("Show touch events", value=True, key="pc_touches")
+
+    with pc_c1:
+        st.plotly_chart(
+            plot_price_zones(
+                df_zones, study,
+                symbol=symbol,
+                sigmas=pc_sigmas or None,
+                show_touches=pc_touches,
+            ),
+            use_container_width=True,
+        )
+
 
 # ── Return Curves ─────────────────────────────────────────────────────────────
 
