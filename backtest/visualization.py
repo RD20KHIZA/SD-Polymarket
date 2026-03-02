@@ -34,7 +34,11 @@ _DEMAND_COLORS = _build_palette("Blues",   _N, low=0.25, high=0.72)  # light sky
 SUPPLY_COLOR  = _SUPPLY_COLORS[_N // 2]   # mid-supply reference
 DEMAND_COLOR  = _DEMAND_COLORS[_N // 2]   # mid-demand reference
 
-_DAY_TICKS = {6: "1d", 18: "3d", 30: "5d", 42: "7d", 60: "10d", 90: "15d", 120: "20d"}
+_DAY_TICKS = {
+    6: "1d", 30: "5d", 60: "10d", 120: "20d",
+    180: "30d", 300: "50d", 360: "60d", 540: "90d",
+    720: "120d", 900: "150d", 1080: "180d",
+}
 
 
 def _color(sigma: float, direction: str) -> str:

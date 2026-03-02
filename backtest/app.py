@@ -68,8 +68,8 @@ with st.sidebar:
         help="Rolling window for daily vol — 360 matches the Pine Script indicator.",
     )
     max_k = st.slider(
-        "Max Holding Period (4H bars)", 30, 200, 120, step=6,
-        help="120 bars = 20 days at 4H granularity.",
+        "Max Holding Period (4H bars)", 30, 1080, 120, step=6,
+        help="6 bars = 1 day  |  120 = 20d  |  360 = 60d  |  1080 = 180d",
     )
 
     st.divider()
