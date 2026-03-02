@@ -1,0 +1,90 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RafaelDC_
+
+//@version=6
+indicator("Monthly Volatility Zones", overlay=true)
+plot(hlcc4)
+
+// Input parameters
+lookback = input.int(360, "Volatility Lookback Period (Days)", minval=1)
+src = input(hlcc4, "Source")
+
+// Get daily returns for volatility calculation
+daily_src = request.security(syminfo.tickerid, "D", src[1], lookahead=barmerge.lookahead_on)
+daily_returns = math.log(daily_src / daily_src[1])
+
+// Calculate rolling volatility based on daily data with monthly adjustment
+rolling_volatility = request.security(syminfo.tickerid, "D", ta.stdev(daily_returns, lookback) * math.sqrt(365) / math.sqrt(12), lookahead=barmerge.lookahead_on)
+
+// Check for new month
+is_new_month = ta.change(time("M")) != 0
+
+// Get reference price for the month
+monthly_src = request.security(syminfo.tickerid, "M", src[1], lookahead=barmerge.lookahead_on)
+
+// Store zones using variables
+var float monthly_price = na
+// Supply zones from outer to inner
+var float supply_zone_2sd = na
+var float supply_zone_175sd = na
+var float supply_zone_15sd = na
+var float supply_zone_125sd = na
+var float supply_zone_1sd = na
+var float supply_zone_075sd = na
+var float supply_zone_05sd = na
+var float supply_zone_0sd = na  // New 0σ zone
+// Demand zones from inner to outer
+var float demand_zone_0sd = na  // New 0σ zone
+var float demand_zone_025sd = na
+var float demand_zone_05sd = na
+var float demand_zone_075sd = na
+var float demand_zone_1sd = na
+var float demand_zone_125sd = na
+var float demand_zone_15sd = na
+var float demand_zone_175sd = na
+var float demand_zone_2sd = na
+
+if is_new_month
+    monthly_price := monthly_src
+    // Calculate all supply zones
+    supply_zone_2sd := monthly_price * (1 + 2.0 * rolling_volatility)
+    supply_zone_175sd := monthly_price * (1 + 1.75 * rolling_volatility)
+    supply_zone_15sd := monthly_price * (1 + 1.5 * rolling_volatility)
+    supply_zone_125sd := monthly_price * (1 + 1.25 * rolling_volatility)
+    supply_zone_1sd := monthly_price * (1 + rolling_volatility)
+    supply_zone_075sd := monthly_price * (1 + 0.75 * rolling_volatility)
+    supply_zone_05sd := monthly_price * (1 + 0.5 * rolling_volatility)
+    supply_zone_0sd := monthly_price    // New 0σ zone
+    // Calculate all demand zones
+    demand_zone_0sd := monthly_price    // New 0σ zone
+    demand_zone_025sd := monthly_price * (1 - 0.25 * rolling_volatility)
+    demand_zone_05sd := monthly_price * (1 - 0.5 * rolling_volatility)
+    demand_zone_075sd := monthly_price * (1 - 0.75 * rolling_volatility)
+    demand_zone_1sd := monthly_price * (1 - rolling_volatility)
+    demand_zone_125sd := monthly_price * (1 - 1.25 * rolling_volatility)
+    demand_zone_15sd := monthly_price * (1 - 1.5 * rolling_volatility)
+    demand_zone_175sd := monthly_price * (1 - 1.75 * rolling_volatility)
+    demand_zone_2sd := monthly_price * (1 - 2.0 * rolling_volatility)
+
+// Plot all supply zones
+var supply_line_2sd = plot(supply_zone_2sd, "Supply Zone (2σ)", color=color.new(color.red, 85), linewidth=1)
+var supply_line_175sd = plot(supply_zone_175sd, "Supply Zone (1.75σ)", color=color.new(color.red, 82), linewidth=1)
+var supply_line_15sd = plot(supply_zone_15sd, "Supply Zone (1.5σ)", color=color.new(color.red, 79), linewidth=1)
+var supply_line_125sd = plot(supply_zone_125sd, "Supply Zone (1.25σ)", color=color.new(color.red, 76), linewidth=1)
+var supply_line_1sd = plot(supply_zone_1sd, "Supply Zone (1σ)", color=color.new(color.red, 73), linewidth=2)
+var supply_line_075sd = plot(supply_zone_075sd, "Supply Zone (0.75σ)", color=color.new(color.red, 65), linewidth=2)
+var supply_line_05sd = plot(supply_zone_05sd, "Supply Zone (0.5σ)", color=color.new(color.red, 55), linewidth=2)
+var supply_line_0sd = plot(supply_zone_0sd, "Supply Zone (0σ)", color=color.new(color.gray, 50), linewidth=3)  // New 0σ zone
+
+// Plot all demand zones
+var demand_line_0sd = plot(demand_zone_0sd, "Demand Zone (0σ)", color=color.new(color.gray, 50), linewidth=3)  // New 0σ zone
+var demand_line_025sd = plot(demand_zone_025sd, "Demand Zone (0.25σ)", color=color.new(color.green, 45), linewidth=2)
+var demand_line_05sd = plot(demand_zone_05sd, "Demand Zone (0.5σ)", color=color.new(color.green, 55), linewidth=2)
+var demand_line_075sd = plot(demand_zone_075sd, "Demand Zone (0.75σ)", color=color.new(color.green, 65), linewidth=2)
+var demand_line_1sd = plot(demand_zone_1sd, "Demand Zone (1σ)", color=color.new(color.green, 73), linewidth=2)
+var demand_line_125sd = plot(demand_zone_125sd, "Demand Zone (1.25σ)", color=color.new(color.green, 76), linewidth=1)
+var demand_line_15sd = plot(demand_zone_15sd, "Demand Zone (1.5σ)", color=color.new(color.green, 79), linewidth=1)
+var demand_line_175sd = plot(demand_zone_175sd, "Demand Zone (1.75σ)", color=color.new(color.green, 82), linewidth=1)
+var demand_line_2sd = plot(demand_zone_2sd, "Demand Zone (2σ)", color=color.new(color.green, 85), linewidth=1)
+
+

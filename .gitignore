@@ -1,0 +1,18 @@
+# cached market data — re-downloaded at runtime
+data/
+
+# python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# claude code settings
+.claude/
+
+# env files
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
