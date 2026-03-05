@@ -43,7 +43,7 @@ def detect_zone_touches(df: pd.DataFrame) -> pd.DataFrame:
         events = detect_zone_touches(df_zones)
         events.groupby(["direction", "sigma"]).size()
     """
-    records: list[dict] = []
+    chunks: list[pd.DataFrame] = []
 
     df = df.copy()
     df["_period"] = df.index.to_period("M")
@@ -56,8 +56,7 @@ def detect_zone_touches(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         # ── supply: high touches or exceeds the zone ─────────────────────────
-        sup_touch = df["high"] >= df[sup_col]
-        sup_valid = sup_touch & df[sup_col].notna()
+        sup_valid = (df["high"] >= df[sup_col]) & df[sup_col].notna()
 
         sup_events = (
             df[sup_valid]
@@ -66,26 +65,23 @@ def detect_zone_touches(df: pd.DataFrame) -> pd.DataFrame:
             .first()
             .reset_index()
         )
-        for _, row in sup_events.iterrows():
-            records.append(
-                {
-                    "timestamp": row["timestamp"],
-                    "month": str(row["_period"]),
-                    "sigma": sigma,
-                    "direction": "supply",
-                    "zone_level": row[sup_col],
-                    "monthly_open": row["monthly_open"],
-                    "monthly_vol": row["monthly_vol"],
-                    "bar_open": row["open"],
-                    "bar_high": row["high"],
-                    "bar_low": row["low"],
-                    "bar_close": row["close"],
-                }
-            )
+        if not sup_events.empty:
+            chunks.append(pd.DataFrame({
+                "timestamp":    sup_events["timestamp"],
+                "month":        sup_events["_period"].astype(str),
+                "sigma":        sigma,
+                "direction":    "supply",
+                "zone_level":   sup_events[sup_col],
+                "monthly_open": sup_events["monthly_open"],
+                "monthly_vol":  sup_events["monthly_vol"],
+                "bar_open":     sup_events["open"],
+                "bar_high":     sup_events["high"],
+                "bar_low":      sup_events["low"],
+                "bar_close":    sup_events["close"],
+            }))
 
         # ── demand: low touches or falls below the zone ───────────────────────
-        dem_touch = df["low"] <= df[dem_col]
-        dem_valid = dem_touch & df[dem_col].notna()
+        dem_valid = (df["low"] <= df[dem_col]) & df[dem_col].notna()
 
         dem_events = (
             df[dem_valid]
@@ -94,28 +90,26 @@ def detect_zone_touches(df: pd.DataFrame) -> pd.DataFrame:
             .first()
             .reset_index()
         )
-        for _, row in dem_events.iterrows():
-            records.append(
-                {
-                    "timestamp": row["timestamp"],
-                    "month": str(row["_period"]),
-                    "sigma": sigma,
-                    "direction": "demand",
-                    "zone_level": row[dem_col],
-                    "monthly_open": row["monthly_open"],
-                    "monthly_vol": row["monthly_vol"],
-                    "bar_open": row["open"],
-                    "bar_high": row["high"],
-                    "bar_low": row["low"],
-                    "bar_close": row["close"],
-                }
-            )
+        if not dem_events.empty:
+            chunks.append(pd.DataFrame({
+                "timestamp":    dem_events["timestamp"],
+                "month":        dem_events["_period"].astype(str),
+                "sigma":        sigma,
+                "direction":    "demand",
+                "zone_level":   dem_events[dem_col],
+                "monthly_open": dem_events["monthly_open"],
+                "monthly_vol":  dem_events["monthly_vol"],
+                "bar_open":     dem_events["open"],
+                "bar_high":     dem_events["high"],
+                "bar_low":      dem_events["low"],
+                "bar_close":    dem_events["close"],
+            }))
 
-    if not records:
+    if not chunks:
         return pd.DataFrame()
 
     events = (
-        pd.DataFrame(records)
+        pd.concat(chunks, ignore_index=True)
         .sort_values("timestamp")
         .reset_index(drop=True)
     )

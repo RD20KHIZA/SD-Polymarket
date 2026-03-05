@@ -23,7 +23,7 @@ The project is built in two layers:
 Detects monthly volatility zone touches on 4H OHLCV data and measures the forward return distribution at every holding period up to 180 days. Answers: *"when price touches a σ zone, what happens next?"*
 
 **Layer 2 — Polymarket Scanner**
-Takes the empirical hit-rate surface from Layer 1 and applies it to live Polymarket binary markets ("Will Bitcoin reach $X in [month]?"). Blends a log-normal barrier model with historical data to compute edge, expected value, and half-Kelly position sizing per strike.
+Takes the empirical hit-rate surface from Layer 1 and applies it to live Polymarket binary markets ("Will Bitcoin reach $X in [month]?"). Blends a GBM barrier model (with drift, Deribit implied vol) with Wilson CI–adjusted historical data via adaptive consensus weights to compute edge, expected value, and half-Kelly position sizing per strike.
 
 ---
 
@@ -109,47 +109,78 @@ The scanner tab is always visible. It fetches live odds automatically from Polym
 
 - **Run the Vol Zone Study first** to enable historical SD (empirical hit-rate blending)
 - Without the study, the scanner runs on barrier model only (still functional)
-- Click **🔄 Refresh odds** to force a new API fetch (cache TTL = 5 minutes)
+- Volatility inputs are **auto-fetched** (Deribit DVOL for barrier, EWMA realized for zones, drift from EWMA 90d) — no manual entry needed
+- Click **🔄 Refresh all** to force re-fetch of odds, vol, and drift (cache TTL = 5–10 minutes)
 
 ---
 
 ## Model Details
 
-### Barrier Probability
+### Barrier Probability (GBM with Drift)
 
-Log-normal first-passage probability (no drift):
-
-```
-P(touch) = 2 × Φ(−|ln(K / S)| / (σ_annual × √T))
-```
-
-Where K = strike, S = BTC spot, T = days remaining / 365.
-
-### Consensus Probability
+First-passage probability under Geometric Brownian Motion with drift (Shreve Ch. 7):
 
 ```
-p_internal = w_barrier × p_barrier + w_sd × hit_rate
+T = days_remaining / 365
+m = drift − 0.5 × σ²          (log-space drift)
+b = |ln(K / S)|                (log-distance to strike)
+
+Upper barrier (K > S):
+  P = Φ(−d₁) + exp(2mb/σ²) × Φ(d₂)
+  where d₁ = (b − mT) / (σ√T),  d₂ = (−b − mT) / (σ√T)
+
+Lower barrier (K < S): flip drift sign, same formula.
+
+drift = 0 collapses to:  P = 2 × Φ(−b / (σ√T))
 ```
 
-Default weights: 60% barrier / 40% historical SD. SD is only blended when `current_σ ≥ min_σ_threshold` and the bucket has ≥ 8 historical events.
+**Volatility inputs (auto-fetched):**
+- `σ_barrier` = Deribit DVOL (30-day implied vol index) — forward-looking
+- `σ_zone` = Vol Zone Study realized vol or EWMA 30d — for σ distance calculation
+- `drift` = EWMA of daily log-returns (halflife 90d) × 50% shrinkage toward zero
+
+### Historical SD (Wilson CI + Sigma Interpolation)
+
+The Vol Zone Study produces a hit-rate surface over (σ, k, direction). The scanner queries this surface using:
+
+1. **1D linear interpolation in σ** between the two adjacent buckets (not nearest-neighbor)
+2. **Wilson score CI** center estimate (shrinks toward 50% for small N)
+3. **N_eff** via weighted harmonic mean of the two interpolated nodes
+
+### Adaptive Consensus
+
+```
+confidence_n = 1 − 1 / (1 + N/25)
+precision    = clamp((0.70 − CI_width) / 0.40, 0, 1)
+w_sd_eff     = W_SD × confidence_n × precision
+p_internal   = (1 − w_sd_eff) × p_barrier + w_sd_eff × p_sd
+```
+
+SD weight scales from ~0% (N=4) to ~32% (N=100). Barrier dominates when SD data is weak.
 
 ### Edge & Signal
 
 ```
 edge_pp = (p_internal − poly_yes) × 100
 
-edge_pp > min_edge  →  BUY YES   (cost = poly_yes)
-edge_pp < −min_edge →  BUY NO    (cost = poly_no = 1 − poly_yes)
+edge_pp > min_edge  →  BUY YES   (cost = ask price, bid-ask adjusted)
+edge_pp < −min_edge →  BUY NO    (cost = 1 − bid price)
 else                →  MONITOR
 ```
 
 ### Position Sizing (Half-Kelly)
 
 ```
-b         = (1 − cost) / cost
+b         = (1 − exec_cost) / exec_cost
 full_kelly = max(0, (p × b − q) / b)
 kelly_%   = full_kelly × 0.5 × 100
 ```
+
+Execution cost is bid-ask adjusted (ask for BUY YES, 1−bid for BUY NO).
+
+### Calibration
+
+`min_sigma` threshold is calibrated via exact binomial test (`scipy.stats.binomtest`, α=0.05) per sigma level. Falls back to a 5pp-divergence heuristic if no sigma rejects H₀.
 
 ### Signal Strength
 
@@ -186,10 +217,15 @@ Key constants in `backtest/scanner_config.py`:
 | `MIN_N_EVENTS` | 8 | Minimum events in SD bucket to use historical data |
 | `MIN_EDGE_PP` | 8.0 | Minimum edge (pp) to generate a BUY signal |
 | `STRONG_EDGE_PP` | 12.0 | Edge threshold for STRONG classification |
-| `ANNUAL_VOL` | 0.65 | Fallback annualized vol (overridden by study auto-sync) |
-| `W_BARRIER` | 0.6 | Barrier model weight in consensus |
-| `W_SD` | 0.4 | Historical SD weight in consensus |
+| `ANNUAL_VOL` | 0.65 | Fallback annualized vol (used only if API fetch fails) |
+| `W_BARRIER` | 0.6 | Base barrier weight in consensus (adaptive scaling applied) |
+| `W_SD` | 0.4 | Base SD weight — scaled by confidence_n × precision |
 | `KELLY_FRACTION` | 0.5 | Half-Kelly multiplier |
+| `EWMA_HALFLIFE_DAYS` | 30 | Halflife for EWMA realized vol |
+| `DRIFT_HALFLIFE_DAYS` | 90 | Halflife for EWMA drift estimation |
+| `DRIFT_SHRINKAGE` | 0.5 | Shrink drift 50% toward zero |
+| `WILSON_Z` | 1.96 | Z-score for Wilson CI (95%) |
+| `CALIBRATION_ALPHA` | 0.05 | Significance level for binomial calibration test |
 
 ---
 
@@ -198,9 +234,10 @@ Key constants in `backtest/scanner_config.py`:
 | Source | Used For |
 |---|---|
 | Binance (via vectorbt/CCXT) | 4H OHLCV for the event study |
-| Binance REST API | Live BTC/USDT spot price |
+| Binance REST API | Live BTC/USDT spot price, daily klines for EWMA vol & drift |
+| Deribit public API | BTC DVOL (30-day implied vol index) for barrier model |
 | Polymarket Gamma API | Event metadata and market list |
-| Polymarket CLOB API | Live YES/NO token mid-prices |
+| Polymarket CLOB API | Live YES/NO token mid-prices + bid/ask |
 
 No API keys required — all public endpoints.
 

@@ -103,21 +103,27 @@ with st.sidebar:
 # ── data pipeline ─────────────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
+def _load_zones(symbol: str, since: str, lookback: int):
+    """Cached separately so changing max_k does not invalidate zone computation."""
+    df_4h  = fetch_crypto_ohlcv(symbol, "4h", since)
+    daily  = resample_to_daily(df_4h)
+    return compute_zones(df_4h, daily, lookback=lookback)
+
+
+@st.cache_data(show_spinner=False)
 def load_and_compute(symbol: str, since: str, lookback: int, max_k: int):
-    df_4h    = fetch_crypto_ohlcv(symbol, "4h", since)
-    daily    = resample_to_daily(df_4h)
-    df_zones = compute_zones(df_4h, daily, lookback=lookback)
+    df_zones = _load_zones(symbol, since, lookback)
     events   = detect_zone_touches(df_zones)
     study    = compute_forward_returns(df_zones, events, max_k=max_k)
-    return study, df_zones
+    summary  = summarize_events(study, max_k=max_k)
+    return study, df_zones, summary
 
 # ── run handler (antes das tabs para garantir dados disponíveis no scanner) ───
 
 if run:
     with st.spinner(f"Loading data for **{symbol}**..."):
         try:
-            study, df_zones = load_and_compute(symbol, since, lookback, max_k)
-            summary = summarize_events(study, max_k=max_k)
+            study, df_zones, summary = load_and_compute(symbol, since, lookback, max_k)
             _current_monthly_vol = float(df_zones["monthly_vol"].dropna().iloc[-1])
             st.session_state.update({
                 "study": study, "df_zones": df_zones, "symbol": symbol,
@@ -328,8 +334,6 @@ with _main_tab:
         st.subheader("Event Data")
 
         st.write("**Summary statistics at key holding periods**")
-        if "summary" not in st.session_state or st.session_state["summary"] is None:
-            st.session_state["summary"] = summarize_events(study, max_k=_max_k)
         summary = st.session_state["summary"]
         key_ks  = [k for k in [6, 12, 18, 30, 42, 60, 90, 120] if k <= _max_k]
         pivot   = summary[summary["k"].isin(key_ks)].copy()

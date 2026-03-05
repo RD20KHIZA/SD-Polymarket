@@ -1,7 +1,7 @@
 # Monthly Volatility Zones Dashboard — Contexto Completo
 
 **Projeto:** `monthly-volatility-zones-indicator/backtest/`
-**Data:** 2026-03-04
+**Data:** 2026-03-05
 **Estado:** Implementação completa, validada end-to-end.
 
 ---
@@ -249,13 +249,21 @@ MIN_SIGMA_THRESHOLD = 1.5   # fallback; calibrate_min_sigma() sobrescreve
 MIN_N_EVENTS        = 8     # N mínimo no bucket para ativar SD histórico
 MIN_EDGE_PP         = 8.0   # edge mínimo em pp para gerar sinal
 STRONG_EDGE_PP      = 12.0  # edge para sinal STRONG
-ANNUAL_VOL          = 0.65  # vol anualizada BTC
+ANNUAL_VOL          = 0.65  # vol anualizada BTC (fallback)
 W_BARRIER           = 0.6   # peso barreira no consenso
-W_SD                = 0.4   # peso SD histórico
+W_SD                = 0.4   # peso SD histórico (base; adaptativo no Sprint 2)
 KELLY_FRACTION      = 0.5   # half-kelly
+# Sprint 1
+EWMA_HALFLIFE_DAYS  = 30    # halflife EWMA realized vol
+MAX_SPREAD_CENTS    = 5.0   # flag illiquid if spread > this
+WILSON_Z            = 1.96  # z-score Wilson CI (95%)
+# Sprint 2
+DRIFT_HALFLIFE_DAYS = 90    # halflife EWMA drift estimation
+DRIFT_SHRINKAGE     = 0.5   # shrink drift 50% toward zero
+CALIBRATION_ALPHA   = 0.05  # significance level binomial test
+# APIs
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE  = "https://clob.polymarket.com"
-# SEM FALLBACK_ODDS — strikes 100% da API
 ```
 
 ### polymarket_live.py — API dinâmica
@@ -289,14 +297,18 @@ Validado: março 2026 → 20 strikes ($20k–$150k) ao vivo.
 
 ```python
 fetch_btc_price() -> float                  # Binance REST
-barrier_prob(strike, current, annual_vol, days) -> float   # P(ever touch)
+fetch_realized_vol(halflife=30, lookback=120) -> float  # EWMA ann vol (Binance daily)
+fetch_deribit_iv() -> float                 # Deribit DVOL (30d implied vol)
+estimate_drift(halflife=90, shrinkage=0.5, lookback=120) -> float  # EWMA drift ann
+wilson_interval(hits, n, z=1.96) -> (center, lower, upper)  # Wilson score CI
+barrier_prob(strike, current, annual_vol, days, drift=0.0) -> float  # GBM+drift
 current_sigma(btc_price, monthly_open, annual_vol) -> float
 get_regime(btc_price, monthly_open) -> str  # "above_open"|"below_open"|"neutral"
-calibrate_min_sigma(df_hitrate, min_n_events=8, min_hit_rate_diff=0.05) -> float
-get_p_sd(sigma_atual, direction, df_hitrate, k_target, min_n_events) -> (float|None, int|None)
+calibrate_min_sigma(df_hitrate, ...) -> float  # binomial test + fallback heuristic
+get_p_sd(sigma, dir, df_hitrate, k, min_n) -> (p_wilson, n, ci_lo, ci_hi)  # 4-tuple
 kelly(p_win, cost, kelly_fraction) -> float
-get_scanner_data(...) -> pd.DataFrame
-decay_table(strike, btc_price, annual_vol, days_remaining, step_days=6) -> pd.DataFrame
+get_scanner_data(barrier_vol, zone_vol, drift, ...) -> pd.DataFrame
+decay_table(strike, btc, barrier_vol, days, drift=0.0, step=6) -> pd.DataFrame
 ```
 
 **current_sigma() — distância ao monthly_open em σ mensais:**
@@ -319,49 +331,79 @@ below_open → "demand"
 neutral    → "demand"  (default)
 ```
 
-**Barreira log-normal (sem drift):**
+**Barreira GBM com drift (Shreve Ch.7):**
 ```
 T = days / 365
-P(toque) = 2 × Φ(−|ln(strike/S)| / (σ_anual × √T))
+σ = barrier_vol × √T
+b = |ln(strike / S)|
+m = drift − 0.5 × barrier_vol²     # log-space drift
+
+Upper barrier (strike > S):
+  d1 = (−b + m×T) / σ
+  d2 = (−b − m×T) / σ
+  P  = Φ(d1) + exp(2×m×b / barrier_vol²) × Φ(d2)
+
+Lower barrier (strike < S):
+  flip drift sign (m → −m), same formula
+
+drift = 0 → colapsa para 2×Φ(−b/σ)  (modelo original sem drift)
 ```
 
-**calibrate_min_sigma() — algoritmo completo:**
+**estimate_drift() — EWMA drift com shrinkage:**
 ```python
-# baseline = hit_rate médio dos buckets com sigma <= 0.75
-low_sigma = df_hitrate[df_hitrate["sigma"] <= 0.75]
-baseline  = low_sigma["hit_rate"].mean()   # ≈ 0.5 = ruído
-
-# threshold = menor sigma com divergência significativa do baseline
-significant = df_hitrate[
-    (df_hitrate["n_events"] >= min_n_events) &         # N >= 8
-    (abs(df_hitrate["hit_rate"] - baseline) >= 0.05)   # diverge ≥ 5pp
-]
-return significant["sigma"].min()   # ou fallback MIN_SIGMA_THRESHOLD=1.5
+# Busca 120 klines diárias Binance, computa EWMA mean de log-returns
+# halflife = DRIFT_HALFLIFE_DAYS (90d)
+# mu_annual = ewma_mean * 365
+# return mu_annual * DRIFT_SHRINKAGE (0.5)   # shrink 50% toward zero
 ```
 
-**get_p_sd() — algoritmo completo:**
+**calibrate_min_sigma() — algoritmo (Sprint 2: binomial test):**
 ```python
-# 1. Encontra sigma mais próximo do atual no df_hitrate
-closest_sigma = min(available_sigmas, key=lambda s: abs(s - sigma_atual))
-
-# 2. Filtra por sigma + direction
-sub = df_hitrate[(df_hitrate["sigma"] == closest_sigma) &
-                 (df_hitrate["direction"] == direction)]
-
-# 3. Encontra k mais próximo do k_target = days_remaining * 6
-k_used = min(available_ks, key=lambda k: abs(k - k_target))
-
-# 4. Retorna hit_rate e n_events (ou None se N < min_n_events)
-row = sub[sub["k"] == k_used]
-n = int(row["n_events"])
-if n < min_n_events: return None, None
-return float(row["hit_rate"]), n
+# Primary: binomial exact test (scipy.stats.binomtest)
+# Para cada sigma (crescente), acumula hits e n_events
+# Se binomtest(total_hits, total_n, 0.5).pvalue < CALIBRATION_ALPHA (0.05):
+#   → retorna esse sigma como threshold
+#
+# Fallback: heurística original 5pp (baseline + divergência)
+# Se nenhum teste rejeita: retorna MIN_SIGMA_THRESHOLD (1.5)
 ```
 
-**Consenso ponderado:**
+**get_p_sd() — interpolação 1D em sigma (Sprint 3):**
+```python
+# 1. Encontra sigma_lo e sigma_hi que encaixam sigma_atual
+#    Clamp se fora dos limites do grid
+
+# 2. Lookup (hit_rate, N) em cada nó via _lookup_node()
+#    k usa nearest-neighbor (espaçamento 1 bar, erro desprezível)
+
+# 3. Se ambos nós válidos (N >= min_n_events):
+#    t = (sigma_q - sigma_lo) / (sigma_hi - sigma_lo)
+#    center_interp = (1-t) × wilson_center_lo + t × wilson_center_hi
+#    N_eff = média harmônica ponderada: 1 / (w_lo/N_lo + w_hi/N_hi)
+#    CI recomputado via wilson_interval(center_interp × N_eff, N_eff)
+
+# 4. Se apenas 1 nó válido: fallback nearest-neighbor (usa o nó disponível)
+# 5. Se nenhum nó válido: retorna (None,)*4
 ```
-p_internal = 0.6 × p_barrier + 0.4 × p_sd   (se SD ativo e N >= 8)
-p_internal = p_barrier                         (se SD inativo ou N insuficiente)
+
+**Consenso ponderado (Sprint 2: pesos adaptativos):**
+```
+# Pesos base: W_BARRIER=0.6, W_SD=0.4
+# Sprint 2: w_sd escala com qualidade dos dados SD
+
+confidence_n = 1 − 1/(1 + N/25)          # 0→0, 25→0.5, 100→0.8
+precision    = clamp((0.70 − ci_width) / 0.40, 0, 1)   # CI estreito → confiável
+w_sd_eff     = W_SD × confidence_n × precision
+
+# Resultado prático:
+# N=4  → w_sd ≈ 0.6%    (quase todo barreira)
+# N=8  → w_sd ≈ 3.5%
+# N=20 → w_sd ≈ 14.5%
+# N=50 → w_sd ≈ 26.7%
+# N=100→ w_sd ≈ 32.0%   (nunca chega em 40%)
+
+w_barrier_eff = 1 − w_sd_eff
+p_internal = w_barrier_eff × p_barrier + w_sd_eff × p_sd
 ```
 
 **Edge e sinal:**
@@ -425,21 +467,22 @@ _has_trade = trade_prob is not None and cost is not None
 ```
 
 ### Colunas do DataFrame retornado por get_scanner_data()
-`strike, direction, dist_pct, poly_yes, poly_no, p_barrier, p_sd, n_sd, p_internal, edge_pp, signal, signal_strength, kelly_pct, cost_¢, gain_¢, ev_¢, consensus_source, sd_active, sigma_atual, regime, source`
+`strike, direction, dist_pct, poly_yes, poly_no, p_barrier, p_sd, n_sd, p_internal, edge_pp, signal, signal_strength, kelly_pct, cost_¢, gain_¢, ev_¢, consensus_source, sd_active, sigma_atual, regime, source, spread_¢, ci_width`
 
 ### tab_polymarket_scanner.py — sidebar
 
 ```python
 monthly_open     = st.number_input("Monthly open ($)", value=66_973.0)
-annual_vol       = st.slider("Vol anualizada BTC", 0.30, 1.20, 0.65)
+barrier_vol      = st.number_input("Barrier vol (IV)", value=deribit_iv)    # Deribit DVOL
+zone_vol         = st.number_input("Zone vol (realized)", value=ewma_rv)   # EWMA realized
+drift            = st.number_input("Drift (annualized)", value=est_drift)  # EWMA drift
 days_remaining   = st.number_input("Dias restantes no mês", ...)
 slug_override    = st.text_input("Slug override (vazio = auto)")
-event_slug       = slug_override.strip() or None   # None = auto-detect
 min_edge         = st.slider("Edge mínimo (pp)", 4, 20, 8)
 w_barrier        = st.slider("Peso barreira", 0.3, 1.0, 0.6)
 w_sd             = round(1.0 - w_barrier, 2)
 min_sigma_override = st.slider("Min σ para SD ativo", 0.0, 3.0, 0.0)
-# 0.0 = SD sempre ativo; sobrescreve o threshold calibrado
+# Botão "Refresh all" limpa caches de vol, drift, odds
 ```
 
 ### Dois valores de threshold (distintos)
@@ -509,14 +552,14 @@ streamlit
 vectorbt          # fetch OHLCV + VBT (pip install vectorbt)
 pandas, numpy
 plotly
-scipy             # scipy.stats.norm (modelo barreira)
-requests          # Polymarket API + Binance
+scipy             # scipy.stats.norm + binomtest (modelo barreira + calibração)
+requests          # Polymarket API + Binance + Deribit
 pyarrow           # Parquet cache
 ```
 
 ---
 
-## Estado atual (2026-03-04)
+## Estado atual (2026-03-05)
 
 - [x] Vol Zone Study tab completo (Price Chart, Return Curves, Hit Rate, Sharpe, Distribution, Full Report, Data, VectorBT)
 - [x] Polymarket Scanner v2 com df_hitrate do Vol Zone Study
@@ -527,4 +570,31 @@ pyarrow           # Parquet cache
 - [x] app.py ordering fix (run handler antes de st.tabs)
 - [x] Validação end-to-end: 20 strikes ao vivo, scanner 20 linhas
 
-**Nenhuma tarefa pendente.**
+### Sprint 1 — Otimizações do modelo (2026-03-05)
+
+- [x] **Vol dinâmica (EWMA)**: `fetch_realized_vol()` busca 120 klines diárias Binance, computa EWMA ann vol (halflife 30d). Substitui `ANNUAL_VOL=0.65` como default do slider. Cache 10min no Streamlit.
+- [x] **Wilson CI no SD**: `wilson_interval()` → `get_p_sd()` retorna Wilson center (shrunk toward 50% para small N) + CI bounds. N=4 com 75% → 62.8%. CI width reportado na tabela como métrica de confiança.
+- [x] **Bid-ask spread**: Kelly e EV usam preço de execução (ask para BUY YES, 1-bid para BUY NO) em vez de midpoint. Coluna `Spread ¢` na tabela. Edge detection mantém midpoint.
+
+### Sprint 2 — Modelo robusto (2026-03-05)
+
+- [x] **Drift no barrier model**: `barrier_prob()` reescrita com GBM+drift (Shreve Ch.7). `estimate_drift()` usa EWMA 90d com 50% shrinkage toward zero. Drift negativo → P(touch) sobe para downside, desce para upside.
+- [x] **Pesos adaptativos no consenso**: `w_sd_eff = W_SD × confidence_n × precision`. confidence_n satura com N (via 1-1/(1+N/25)), precision penaliza CI largo. N=4→0.6%, N=50→26.7%. Barreira domina quando dados SD são fracos.
+- [x] **Binomial test na calibração**: `calibrate_min_sigma()` usa `scipy.stats.binomtest` como teste primário (α=0.05). Fallback para heurística 5pp se scipy falhar ou nenhum sigma rejeitar H0.
+- [x] **Separação vol inputs**: Barrier vol (Deribit DVOL, forward-looking) vs Zone vol (EWMA realized). Dois inputs independentes na sidebar + "Refresh all" button.
+
+### Sprint 3 — Refinamento (2026-03-05)
+
+- [x] **Interpolação 1D em sigma**: `get_p_sd()` interpola Wilson centers entre os dois sigmas adjacentes do grid. N_eff via média harmônica ponderada. CI recomputado. Fallback nearest-neighbor se um nó não tem dados. k mantém nearest-neighbor (espaçamento 1 bar).
+- [x] **Remoção do slider Barrier weight**: pesos adaptativos (Sprint 2) tornam o slider redundante. Usa `cfg.W_BARRIER/W_SD` como base fixa.
+- [x] **Vol inputs read-only com timestamps**: barrier_vol, zone_vol, drift auto-fetched e read-only. Cada valor mostra fonte + horário UTC de fetch.
+
+Propostas revisadas por quant-analyst + quant-dev e descartadas:
+- **Temporal weighting**: DEFERIDO — N por bucket (8-30) muito baixo; decay exponencial destruiria N_eff. Wilson CI já trata confiança.
+- **Intra-month decay**: DROPADO — GBM é Markov; P(touch) já condiciona em (spot, T_restante). DVOL já captura vol forward.
+- **Strike correlation**: DROPADO — modelo já é monotônico (p_barrier monotônico, p_sd constante para todos strikes).
+
+### Próximos (Sprint 4 — não solicitado)
+
+- [ ] Per-strike sigma lookup (sigma_strike em vez de sigma_spot para SD)
+- [ ] Vol term structure (IV tenor-matched da Deribit em vez de DVOL 30d fixo)
