@@ -1,18 +1,32 @@
-# cached market data — re-downloaded at runtime
+# cached market data — re-downloaded automatically on first run
 data/
+*.parquet
 
 # python bytecode
 __pycache__/
 *.pyc
 *.pyo
 
+# virtual environments
+venv/
+.venv/
+env/
+
 # claude code settings
 .claude/
 
-# env files
+# IDE
+.vscode/
+.idea/
+
+# env / secrets
 .env
 *.env
+secrets.json
 
 # OS
 .DS_Store
 Thumbs.db
+
+# jupyter
+.ipynb_checkpoints/

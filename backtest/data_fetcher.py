@@ -40,11 +40,11 @@ def fetch_crypto_ohlcv(
     symbol: str,
     timeframe: str = "4h",
     since: str = "2020-01-01",
-    exchange: str = "bybit",
+    exchange: str = "binance",
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """
-    Fetch OHLCV for a crypto pair from Bybit (or any CCXT exchange).
+    Fetch OHLCV for a crypto pair from KuCoin (or any CCXT exchange).
 
     Uses vectorbt's CCXTData under the hood (handles pagination + retries).
     Results are cached as Parquet; subsequent calls only fetch new bars.
@@ -53,7 +53,7 @@ def fetch_crypto_ohlcv(
         symbol:        e.g. "BTC/USDT", "HYPE/USDT"
         timeframe:     e.g. "4h", "1d"
         since:         ISO date string — start of the study window
-        exchange:      CCXT exchange id (default: "binance")
+        exchange:      CCXT exchange id (default: "binance" — Binance spot)
         force_refresh: ignore cache and re-download everything
 
     Returns:
