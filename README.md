@@ -4,6 +4,17 @@ A quantitative research dashboard that turns a TradingView volatility indicator 
 
 ---
 
+## Research Foundation
+
+This project is grounded in the methodology proposed by **Leandro Guerra** in:
+
+> *Supply and Demand Levels Forecasting Based on Returns Volatility* — Diurnalis Series, 2022
+> [academia.edu/90754102](https://www.academia.edu/90754102/Supply_and_Demand_Levels_Forecasting_Based_on_Returns_Volatility)
+
+The paper introduces a quantitative framework for identifying supply and demand zones using returns-based volatility, replacing subjective chart interpretation with measurable, scale-free metrics generalizable across asset classes. This dashboard operationalizes that framework on BTC/USDT 4H data, extending it with an empirical event study and a live Polymarket edge scanner.
+
+---
+
 ## Overview
 
 The project is built in two layers:
